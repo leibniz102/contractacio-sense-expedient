@@ -1,21 +1,31 @@
 # 📊 Contractació Sense Expedient - Dashboard
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://contractacio-sense-expedient.streamlit.app)
+
 Dashboard interactiu per a l'anàlisi comparatiu de la contractació sense expedient entre els exercicis 2024 i 2025.
 
 **Universitat Jaume I** - Vicegerència de Recursos Humans
 
+## 🚀 Demo en Viu
+
+Accedeix al dashboard: **[contractacio-sense-expedient.streamlit.app](https://contractacio-sense-expedient.streamlit.app)**
+
+> ⚠️ **Nota**: Has de pujar el teu propi fitxer Excel per veure les dades.
+
 ## 🎯 Funcionalitats
 
+- 📤 **Càrrega de Fitxers**: Puja el teu Excel directament des del navegador
 - 📊 **Resum Executiu**: Mètriques principals i indicadors clau
 - 📈 **Comparativa per Categories**: Classificació automàtica de gastos
 - ✈️ **Anàlisi de Viatges**: Detall de proveïdors de transport i agències
 - 📚 **Anàlisi de Publicacions**: Editorials científiques i costos Open Access
 - 🏢 **Top Proveïdors**: Rànquings, increments i nous proveïdors
 - 📋 **Detall de Registres**: Taula filtrable amb exportació a Excel
+- 🔒 **Privacitat**: Les dades es processen localment i no s'emmagatzemen
 
 ## 📁 Estructura de Dades Requerida
 
-Per a executar el dashboard, necessites crear la carpeta `datos/` amb el fitxer:
+Per a utilitzar el dashboard, necessites un fitxer Excel amb l'estructura següent:
 
 ```
 datos/

@@ -12,14 +12,19 @@ from typing import List, Dict, Optional
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import io
 
 # ============================================================
 # INFORMACIÓN DE VERSIÓN
 # ============================================================
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __fecha_version__ = "2025-01-18"
 __autor__ = "Vicegerència de Recursos Humans - UJI"
 __changelog__ = """
+v1.1.0 (2025-01-18): Suport Streamlit Cloud
+- Afegit file_uploader per pujar Excel des de la interfície
+- Compatible amb Streamlit Cloud sense necessitat de fitxers locals
+
 v1.0.0 (2025-01-18): Versió inicial
 - Comparativa completa 2024 vs 2025
 - Anàlisi detallat de viatges
@@ -187,11 +192,23 @@ st.set_page_config(
 # CARGA DE DATOS
 # ============================================================
 @st.cache_data
-def cargar_todos_datos():
-    """Carga y preprocesa todos los datos."""
+def cargar_desde_archivo_local():
+    """Carga datos desde archivo local (si existe)."""
     df_2025 = cargar_datos(ARCHIVO_DATOS, 'SIN EXPTE 2025')
     df_2024 = cargar_datos(ARCHIVO_DATOS, 'SIN EXPTE 2024')
+    return procesar_dataframes(df_2024, df_2025)
 
+
+@st.cache_data
+def cargar_desde_upload(archivo_bytes: bytes):
+    """Carga datos desde archivo subido por el usuario."""
+    df_2025 = pd.read_excel(io.BytesIO(archivo_bytes), sheet_name='SIN EXPTE 2025')
+    df_2024 = pd.read_excel(io.BytesIO(archivo_bytes), sheet_name='SIN EXPTE 2024')
+    return procesar_dataframes(df_2024, df_2025)
+
+
+def procesar_dataframes(df_2024: pd.DataFrame, df_2025: pd.DataFrame):
+    """Procesa y limpia los DataFrames."""
     # Limpiar filas de totales
     df_2025 = df_2025[df_2025['Nombre Complet'].notna()].copy()
     df_2024 = df_2024[df_2024['Nombre Complet'].notna()].copy()
@@ -207,12 +224,12 @@ def cargar_todos_datos():
     return df_2024, df_2025
 
 
-try:
-    df_2024, df_2025 = cargar_todos_datos()
-    datos_cargados = True
-except Exception as e:
-    datos_cargados = False
-    error_msg = str(e)
+# Inicializar variables
+datos_cargados = False
+df_2024 = None
+df_2025 = None
+error_msg = ""
+archivo_origen = None
 
 # ============================================================
 # SIDEBAR
@@ -227,6 +244,53 @@ with st.sidebar:
     st.caption("**Universitat Jaume I**")
     st.caption("Vicegerència de Recursos Humans")
 
+    st.divider()
+
+    # ============================================================
+    # FILE UPLOADER - Para Streamlit Cloud
+    # ============================================================
+    st.subheader("📤 Carregar Dades")
+
+    # Verificar si existe archivo local
+    archivo_local_existe = ARCHIVO_DATOS.exists()
+
+    if archivo_local_existe:
+        st.success("✅ Arxiu local detectat")
+        usar_local = st.checkbox("Usar arxiu local", value=True)
+    else:
+        usar_local = False
+        st.info("ℹ️ Puja el fitxer Excel per començar")
+
+    # File uploader
+    archivo_subido = st.file_uploader(
+        "Puja l'arxiu Excel",
+        type=['xlsx', 'xls'],
+        help="El fitxer ha de contenir les fulles 'SIN EXPTE 2024' i 'SIN EXPTE 2025'"
+    )
+
+    # Lógica de carga de datos
+    if archivo_subido is not None:
+        # Usuario subió un archivo
+        try:
+            archivo_bytes = archivo_subido.getvalue()
+            df_2024, df_2025 = cargar_desde_upload(archivo_bytes)
+            datos_cargados = True
+            archivo_origen = archivo_subido.name
+        except Exception as e:
+            datos_cargados = False
+            error_msg = str(e)
+    elif usar_local and archivo_local_existe:
+        # Usar archivo local
+        try:
+            df_2024, df_2025 = cargar_desde_archivo_local()
+            datos_cargados = True
+            archivo_origen = ARCHIVO_DATOS.name
+        except Exception as e:
+            datos_cargados = False
+            error_msg = str(e)
+
+    st.divider()
+
     if st.button("🔄 Recarregar dades", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -234,26 +298,28 @@ with st.sidebar:
     st.divider()
 
     # Info de datos
-    st.subheader("📂 Dades")
-    st.caption(f"`{ARCHIVO_DATOS.name}`")
     if datos_cargados:
+        st.subheader("📂 Dades Carregades")
+        st.caption(f"`{archivo_origen}`")
         st.caption(f"2024: {len(df_2024):,} registres")
         st.caption(f"2025: {len(df_2025):,} registres")
+        st.divider()
 
-    st.divider()
-
-    # Navegación
-    st.subheader("📑 Navegació")
-    secciones = [
-        "ℹ️ Presentació i Dades",
-        "📊 Resum Executiu",
-        "📈 Comparativa per Categories",
-        "✈️ Anàlisi de Viatges",
-        "📚 Anàlisi de Publicacions",
-        "🏢 Top Proveïdors",
-        "📋 Detall de Registres"
-    ]
-    seccion = st.radio("Selecciona secció:", secciones, label_visibility="collapsed")
+    # Navegación (solo si hay datos)
+    if datos_cargados:
+        st.subheader("📑 Navegació")
+        secciones = [
+            "ℹ️ Presentació i Dades",
+            "📊 Resum Executiu",
+            "📈 Comparativa per Categories",
+            "✈️ Anàlisi de Viatges",
+            "📚 Anàlisi de Publicacions",
+            "🏢 Top Proveïdors",
+            "📋 Detall de Registres"
+        ]
+        seccion = st.radio("Selecciona secció:", secciones, label_visibility="collapsed")
+    else:
+        seccion = None
 
     st.divider()
 
@@ -269,7 +335,39 @@ with st.sidebar:
 # CONTENIDO PRINCIPAL
 # ============================================================
 if not datos_cargados:
-    st.error(f"❌ Error carregant les dades: {error_msg}")
+    st.header("📊 Contractació Sense Expedient")
+    st.subheader("Comparativa 2024 vs 2025")
+
+    if error_msg:
+        st.error(f"❌ Error carregant les dades: {error_msg}")
+    else:
+        st.info("""
+        ### 👋 Benvingut/da!
+
+        Per començar a utilitzar el dashboard, **puja el fitxer Excel** amb les dades
+        de contractació sense expedient a través del panell lateral.
+
+        #### 📋 Requisits del fitxer:
+        - Format: `.xlsx` o `.xls`
+        - Ha de contenir dues fulles:
+          - `SIN EXPTE 2024`
+          - `SIN EXPTE 2025`
+        - Columnes necessàries: `Nombre Complet`, `N Factura`, `Desc Gasto`, `Base imp`
+
+        #### 🔒 Privacitat:
+        Les dades es processen localment en el navegador i **no s'emmagatzemen** al servidor.
+        """)
+
+        # Mostrar ejemplo de estructura
+        with st.expander("📁 Exemple d'estructura del fitxer"):
+            ejemplo = pd.DataFrame({
+                'Nombre Complet': ['Proveïdor A', 'Proveïdor B', 'Proveïdor C'],
+                'N Factura': ['FAC-001', 'FAC-002', 'FAC-003'],
+                'Desc Gasto': ['Descripció del gasto 1', 'Descripció del gasto 2', 'Descripció del gasto 3'],
+                'Base imp': [1500.00, 2300.50, 890.25]
+            })
+            st.dataframe(ejemplo, use_container_width=True, hide_index=True)
+
     st.stop()
 
 # Métricas globales
@@ -362,7 +460,7 @@ if seccion == "ℹ️ Presentació i Dades":
     st.subheader("📁 Fonts de Dades")
 
     info_fuentes = pd.DataFrame({
-        'Arxiu': [ARCHIVO_DATOS.name],
+        'Arxiu': [archivo_origen if archivo_origen else 'No carregat'],
         'Fulles': ['SIN EXPTE 2024, SIN EXPTE 2025'],
         'Registres 2024': [len(df_2024)],
         'Registres 2025': [len(df_2025)]
