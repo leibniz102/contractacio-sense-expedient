@@ -17,10 +17,18 @@ import io
 # ============================================================
 # INFORMACIÓN DE VERSIÓN
 # ============================================================
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __fecha_version__ = "2025-01-18"
 __autor__ = "Vicegerència de Recursos Humans - UJI"
 __changelog__ = """
+v1.2.0 (2025-01-18): Millora classificació categories
+- Afegides 11 noves categories (de 8 a 19)
+- Classificació per descripció i nom de proveïdor
+- Reduït 'Altres' del 41% al ~10%
+- Noves categories: CEDRO, Formació, Col·laboradors docents,
+  Pisos Solidaris, Reprografia, Missatgeria, Restauració,
+  Servicis legals, Manteniment, Premsa, Servicis universitaris
+
 v1.1.0 (2025-01-18): Suport Streamlit Cloud
 - Afegit file_uploader per pujar Excel des de la interfície
 - Compatible amb Streamlit Cloud sense necessitat de fitxers locals
@@ -116,48 +124,178 @@ def clasificar_gastos(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     categorias = {
+        # Publicaciones científicas
         'Publicacions científiques': [
             'publicación', 'journal', 'article', 'submission', 'publishing',
             'mdpi', 'springer', 'elsevier', 'acs publication', 'open access',
-            'copyright clearance', 'wiley', 'frontiers', 'plos'
+            'copyright clearance', 'wiley', 'frontiers', 'plos', 'sage publications',
+            'taylor & francis', 'nature', 'science direct', 'ieee', 'acm digital'
         ],
+        # Derechos reprográficos (CEDRO)
+        'Drets reprogràfics (CEDRO)': [
+            'cedro', 'derechos reprograficos', 'centro español de derechos',
+            'reprografia', 'drets reprograf'
+        ],
+        # Inscripciones y congresos
         'Inscripcions i congressos': [
             'inscripción', 'inscripció', 'congress', 'conference', 'congreso',
-            'seminari', 'workshop', 'symposium', 'jornada', 'registration'
+            'seminari', 'workshop', 'symposium', 'jornada', 'registration',
+            'full pass', 'annual meeting'
         ],
+        # Formación y cursos (diferente de congresos)
+        'Formació i cursos': [
+            'curso', 'curs ', 'formación', 'formació', 'capacitación',
+            'taller ', 'máster', 'master ', 'doctorado', 'certificado',
+            'técnicas de', 'tècniques de'
+        ],
+        # Colaboradores docentes y prácticas
+        'Col·laboradors docents': [
+            'colaborador docente', 'col·laborador docent', 'supervisor práctic',
+            'prácticas externas', 'pràctiques externes', 'tutor extern',
+            'professorat col·laborador'
+        ],
+        # Viajes y transporte
         'Viatges i transport': [
-            'viaje', 'viatge', 'vuelo', 'vol', 'avión', 'taxi', 'transport',
-            'billetes', 'holidays', 'tours', 'travel', 'hotel', 'allotjament'
+            'viaje', 'viatge', 'vuelo', 'vol ', 'avión', 'taxi', 'transport',
+            'billetes', 'holidays', 'tours', 'travel', 'hotel', 'allotjament',
+            'alojamiento', 'desplazamiento', 'mago tours', 'mediterráneo holiday'
         ],
+        # Membresías y cuotas
         'Membresies i quotes': [
-            'membresía', 'membership', 'cuota', 'afiliación', 'associació',
-            'annual fee', 'suscripción', 'subscripció'
+            'membresía', 'membership', 'cuota', 'quota', 'afiliación', 'associació',
+            'annual fee', 'suscripción', 'subscripció', 'aneca', 'crue', 'ruvid'
         ],
+        # Programa Pisos Solidaris
+        'Programa Pisos Solidaris': [
+            'pisos solidaris', 'pisos-solidaris', 'pis solidari',
+            'programa pisos', 'bloc 2', 'bloc 3', 'bloc 4'
+        ],
+        # Suministros (agua, luz, gas)
         'Subministraments (aigua, llum)': [
-            'agua', 'facsa', 'regantes', 'electricidad', 'gas', 'energies',
-            'suministro', 'subministrament'
+            'agua', 'aigua', 'facsa', 'regantes', 'electricidad', 'llum',
+            'gas natural', 'energies', 'suministro', 'subministrament',
+            'consum elèctric', 'totalenergies'
         ],
+        # Reprografía y fotocopiadoras
+        'Reprografia i fotocopiadores': [
+            'fotocopiadora', 'fotocopias', 'fotocòpies', 'impresora',
+            'contador', 'manteniment fotocopiadora', 'multifunción',
+            'copistería', 'format, s.l', 'impressió'
+        ],
+        # Mensajería y envíos
+        'Missatgeria i enviaments': [
+            'envíos', 'enviaments', 'envios', 'mensajería', 'missatgeria',
+            'urgent', 'azahar urgent', 'dachser', 'correos', 'paquetería',
+            'enviaments de llibres'
+        ],
+        # Restauración y catering
+        'Restauració i càtering': [
+            'comida', 'dinar', 'menú', 'restauració', 'catering', 'càtering',
+            'almuerzo', 'cena', 'dietes', 'servei de restauració', 'coffee break'
+        ],
+        # Servicios legales y asesoría
+        'Servicis legals i assessoria': [
+            'abogacía', 'procura', 'honorarios', 'letrado', 'jurídic',
+            'asesoría', 'assessoria', 'notaría', 'notaria', 'tasas judiciales'
+        ],
+        # Mantenimiento e infraestructura
+        'Manteniment i infraestructura': [
+            'manteniment', 'mantenimiento', 'reparación', 'reparació',
+            'servidor', 'nube', 'hosting', 'infraestructura'
+        ],
+        # Prensa y comunicación
+        'Premsa i comunicació': [
+            'radio', 'prensa', 'periódico', 'publicitat', 'publicidad',
+            'cope', 'mediterráneo', 'comunicación', 'multimedia', 'eco3'
+        ],
+        # Bibliografía y libros
         'Bibliografia i llibres': [
-            'bibliogràfic', 'biblioteca', 'libro', 'book', 'adquisició bibliogr'
+            'bibliogràfic', 'biblioteca', 'libro', 'llibre', 'book',
+            'adquisició bibliogr', 'adquisicions bibliogràfiques', 'proquest'
         ],
+        # Material y equipamiento
         'Material i equipament': [
-            'material', 'equip', 'compra', 'adquisició', 'fungible', 'laboratori'
+            'material', 'equip', 'compra', 'adquisició', 'fungible',
+            'laboratori', 'reactiu', 'químic', 'omron', 'instrumental'
         ],
+        # Software y licencias
         'Software i llicències': [
-            'software', 'licencia', 'llicència', 'subscription', 'cloud', 'saas'
+            'software', 'licencia', 'llicència', 'subscription', 'cloud', 'saas',
+            'aplicación', 'plataforma digital'
+        ],
+        # Servicios universitarios externos
+        'Servicis universitaris externs': [
+            'universität', 'university', 'università', 'fundació universitat',
+            'institut joan lluís vives', 'crue', 'consorci'
         ],
     }
 
-    def clasificar(desc):
+    # Clasificación adicional por nombre de proveedor
+    proveedores_categoria = {
+        'Publicacions científiques': [
+            'springer', 'elsevier', 'wiley', 'mdpi', 'frontiers', 'plos',
+            'acs publication', 'optical publishing', 'sage publication',
+            'taylor & francis', 'oxford university press', 'cambridge university'
+        ],
+        'Drets reprogràfics (CEDRO)': [
+            'centro español de derechos reprograficos', 'cedro'
+        ],
+        'Viatges i transport': [
+            'viajes el corte', 'halcon viajes', 'viajes mago', 'mediterráneo holiday',
+            'rosselli', 'vueling', 'iberia', 'ryanair', 'renfe', 'civis hoteles'
+        ],
+        'Missatgeria i enviaments': [
+            'dhl express', 'ups', 'fedex', 'seur', 'correos express',
+            'azahar urgent', 'dachser'
+        ],
+        'Reprografia i fotocopiadores': [
+            'copistería format', 'copisteria', 'reprografia'
+        ],
+        'Premsa i comunicació': [
+            'eco3 multimedia', 'radio popular', 'cope', 'onda cero',
+            'el mediterráneo', 'uniprex'
+        ],
+        'Servicis universitaris externs': [
+            'institut joan lluís vives', 'fundació universitat jaume',
+            'universität', 'university', 'università', 'consorci'
+        ],
+        'Servicis legals i assessoria': [
+            'abogacía general', 'procura', 'notaría', 'notario'
+        ],
+        'Membresies i quotes': [
+            'aneca', 'crue', 'ruvid', 'aecr', 'european association'
+        ],
+        'Restauració i càtering': [
+            'panificadora', 'catering', 'restaurante', 'tanatorio'
+        ],
+    }
+
+    def clasificar(row):
+        desc = row.get('Desc Gasto', '')
+        nombre = row.get('Nombre Complet', '')
+
         if pd.isna(desc):
-            return 'Altres'
+            desc = ''
+        if pd.isna(nombre):
+            nombre = ''
+
         desc_lower = str(desc).lower()
+        nombre_lower = str(nombre).lower()
+        texto_completo = desc_lower + ' ' + nombre_lower
+
+        # Primero buscar por descripción
         for categoria, keywords in categorias.items():
             if any(kw in desc_lower for kw in keywords):
                 return categoria
+
+        # Luego buscar por nombre de proveedor
+        for categoria, keywords in proveedores_categoria.items():
+            if any(kw in nombre_lower for kw in keywords):
+                return categoria
+
         return 'Altres'
 
-    df['Categoria'] = df['Desc Gasto'].apply(clasificar)
+    df['Categoria'] = df.apply(clasificar, axis=1)
     return df
 
 
