@@ -13,32 +13,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
+import json
 
 # ============================================================
 # INFORMACIÓN DE VERSIÓN
 # ============================================================
-__version__ = "1.2.0"
-__fecha_version__ = "2025-01-18"
+__version__ = "1.5.3"
+__fecha_version__ = "2026-01-22"
 __autor__ = "Vicegerència de Recursos Humans - UJI"
-__changelog__ = """
-v1.2.0 (2025-01-18): Millora classificació categories
-- Afegides 11 noves categories (de 8 a 19)
-- Classificació per descripció i nom de proveïdor
-- Reduït 'Altres' del 41% al ~10%
-- Noves categories: CEDRO, Formació, Col·laboradors docents,
-  Pisos Solidaris, Reprografia, Missatgeria, Restauració,
-  Servicis legals, Manteniment, Premsa, Servicis universitaris
-
-v1.1.0 (2025-01-18): Suport Streamlit Cloud
-- Afegit file_uploader per pujar Excel des de la interfície
-- Compatible amb Streamlit Cloud sense necessitat de fitxers locals
-
-v1.0.0 (2025-01-18): Versió inicial
-- Comparativa completa 2024 vs 2025
-- Anàlisi detallat de viatges
-- Anàlisi detallat de publicacions científiques
-- Exportació a Excel
-"""
+# Historial completo de cambios en: CHANGELOG.md
 
 # ============================================================
 # CONFIGURACIÓN DE RUTAS
@@ -327,9 +310,252 @@ st.set_page_config(
 )
 
 # ============================================================
-# CARGA DE DATOS
+# SESSION STATE PARA GESTIÓN DE CATEGORÍAS
 # ============================================================
-@st.cache_data
+# Categorías base del sistema
+CATEGORIAS_BASE = [
+    'Publicacions científiques',
+    'Drets reprogràfics (CEDRO)',
+    'Inscripcions i congressos',
+    'Formació i cursos',
+    'Col·laboradors docents',
+    'Viatges i transport',
+    'Membresies i quotes',
+    'Programa Pisos Solidaris',
+    'Subministraments (aigua, llum)',
+    'Reprografia i fotocopiadores',
+    'Missatgeria i enviaments',
+    'Restauració i càtering',
+    'Servicis legals i assessoria',
+    'Manteniment i infraestructura',
+    'Premsa i comunicació',
+    'Bibliografia i llibres',
+    'Material i equipament',
+    'Software i llicències',
+    'Servicis universitaris externs',
+    'Altres'
+]
+
+# Inicializar session_state
+if 'categorias_personalizadas' not in st.session_state:
+    st.session_state.categorias_personalizadas = []  # Nuevas categorías creadas por el usuario
+
+if 'asignaciones_manuales' not in st.session_state:
+    st.session_state.asignaciones_manuales = {}  # {(proveedor, factura): nueva_categoria}
+
+if 'reglas_proveedor' not in st.session_state:
+    st.session_state.reglas_proveedor = {}  # {proveedor: categoria} - reglas por proveedor
+
+
+def obtener_todas_categorias() -> List[str]:
+    """Devuelve todas las categorías disponibles (base + personalizadas)."""
+    todas = CATEGORIAS_BASE.copy()
+    for cat in st.session_state.categorias_personalizadas:
+        if cat not in todas:
+            todas.append(cat)
+    return sorted(todas)
+
+
+def aplicar_asignaciones_manuales(df: pd.DataFrame) -> pd.DataFrame:
+    """Aplica las asignaciones manuales sobre el DataFrame."""
+    df = df.copy()
+
+    # Primero aplicar reglas por proveedor
+    for proveedor, categoria in st.session_state.reglas_proveedor.items():
+        mask = df['Nombre Complet'] == proveedor
+        df.loc[mask, 'Categoria'] = categoria
+
+    # Luego aplicar asignaciones individuales (tienen prioridad)
+    for (proveedor, factura), categoria in st.session_state.asignaciones_manuales.items():
+        mask = (df['Nombre Complet'] == proveedor) & (df['N Factura'] == factura)
+        df.loc[mask, 'Categoria'] = categoria
+
+    return df
+
+
+# ============================================================
+# NORMALIZACIÓN DE COLUMNAS
+# ============================================================
+import unicodedata
+import re
+
+
+def normalizar_texto_columna(texto: str) -> str:
+    """Normaliza texto eliminando acentos, espacios extra y caracteres especiales.
+
+    Args:
+        texto: Nombre de columna original
+
+    Returns:
+        Texto normalizado para comparación
+    """
+    if not isinstance(texto, str):
+        return str(texto).lower().strip()
+    # Convertir a minúsculas y eliminar espacios extra
+    texto = texto.lower().strip()
+    # Normalizar Unicode (NFD) y eliminar marcas diacríticas (acentos)
+    texto = unicodedata.normalize('NFD', texto)
+    texto = ''.join(c for c in texto if unicodedata.category(c) != 'Mn')
+    # Reemplazar caracteres especiales por espacio y eliminar espacios múltiples
+    texto = re.sub(r'[_\-\.]+', ' ', texto)
+    texto = re.sub(r'\s+', ' ', texto).strip()
+    return texto
+
+
+# Mapeo de nombres alternativos a nombres esperados (en minúsculas y sin acentos)
+COLUMNAS_MAPEO = {
+    'Nombre Complet': [
+        'nombre complet', 'nom complet', 'nombre completo', 'nom complet proveidor',
+        'proveedor', 'proveidor', 'nombre', 'nom', 'nombre proveedor', 'nom proveidor',
+        'supplier', 'vendor', 'razon social', 'rao social', 'tercero', 'tercer',
+        'acreedor', 'creditor', 'empresa', 'entitat', 'entidad', 'denominacion',
+        'denominacio', 'nom empresa', 'nombre empresa', 'titular', 'beneficiario',
+        'beneficiari', 'nom del proveidor', 'nombre del proveedor'
+    ],
+    'N Factura': [
+        'n factura', 'factura', 'num factura', 'no factura', 'numero factura',
+        'num factura', 'invoice', 'num factura', 'n factura', 'nfactura',
+        'ref factura', 'referencia', 'documento', 'doc', 'num doc', 'n doc',
+        'num documento', 'numero documento', 'factura num', 'invoice number',
+        'factura no', 'numero', 'ref'
+    ],
+    'Desc Gasto': [
+        'desc gasto', 'descripcion', 'descripcio', 'concepto', 'detalle',
+        'description', 'desc gasto', 'descgasto', 'descripcion gasto',
+        'text', 'texto', 'observaciones', 'observacions', 'motivo', 'motiu',
+        'concepto gasto', 'objeto', 'objecte', 'desc', 'descripcion factura',
+        'descripcio factura', 'detall', 'comentario', 'comentari'
+    ],
+    'Base imp': [
+        'base imp', 'importe', 'import', 'base imponible', 'base',
+        'amount', 'total', 'base imp', 'baseimp', 'importe base',
+        'base imposable', 'importe neto', 'import net', 'subtotal',
+        'importe sin iva', 'import sense iva', 'cantidad', 'quantitat',
+        'euros', 'eur', 'valor', 'monto', 'coste', 'cost', 'precio', 'preu'
+    ]
+}
+
+COLUMNAS_REQUERIDAS = ['Nombre Complet', 'N Factura', 'Desc Gasto', 'Base imp']
+
+
+def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza los nombres de columnas al formato esperado.
+
+    Usa normalización de texto (elimina acentos, espacios extra, etc.)
+    para hacer la comparación más robusta.
+
+    Args:
+        df: DataFrame con columnas originales
+
+    Returns:
+        DataFrame con columnas renombradas al formato esperado
+    """
+    df = df.copy()
+    # Crear diccionario de columnas normalizadas -> nombre original
+    columnas_normalizadas = {
+        normalizar_texto_columna(col): col for col in df.columns
+    }
+
+    renombrar = {}
+    for col_esperada, alternativas in COLUMNAS_MAPEO.items():
+        # Si ya existe la columna esperada exacta, no hacer nada
+        if col_esperada in df.columns:
+            continue
+
+        # Buscar coincidencia normalizada de la columna esperada
+        col_esperada_norm = normalizar_texto_columna(col_esperada)
+        if col_esperada_norm in columnas_normalizadas:
+            col_original = columnas_normalizadas[col_esperada_norm]
+            if col_original != col_esperada:
+                renombrar[col_original] = col_esperada
+            continue
+
+        # Buscar en alternativas
+        encontrada = False
+        for alt in alternativas:
+            alt_norm = normalizar_texto_columna(alt)
+            if alt_norm in columnas_normalizadas:
+                col_original = columnas_normalizadas[alt_norm]
+                renombrar[col_original] = col_esperada
+                encontrada = True
+                break
+
+        # Si no se encontró, buscar coincidencia parcial (la columna contiene el patrón)
+        if not encontrada:
+            for alt in alternativas[:5]:  # Solo las primeras alternativas más comunes
+                alt_norm = normalizar_texto_columna(alt)
+                for col_norm, col_orig in columnas_normalizadas.items():
+                    if alt_norm in col_norm or col_norm in alt_norm:
+                        renombrar[col_orig] = col_esperada
+                        encontrada = True
+                        break
+                if encontrada:
+                    break
+
+    if renombrar:
+        df = df.rename(columns=renombrar)
+
+    return df
+
+
+def validar_columnas(df: pd.DataFrame, nombre_hoja: str) -> tuple:
+    """Valida que el DataFrame tenga las columnas requeridas.
+
+    Args:
+        df: DataFrame a validar
+        nombre_hoja: Nombre de la hoja para mensajes de error
+
+    Returns:
+        Tuple (es_valido, mensaje_error)
+    """
+    columnas_faltantes = [col for col in COLUMNAS_REQUERIDAS if col not in df.columns]
+
+    if columnas_faltantes:
+        # Mostrar TODAS las columnas disponibles para ayudar al usuario
+        columnas_lista = df.columns.tolist()
+        columnas_formateadas = '\n'.join([f"  - `{col}`" for col in columnas_lista])
+
+        # Sugerencias de mapeo
+        sugerencias = []
+        for col_faltante in columnas_faltantes:
+            alternativas = COLUMNAS_MAPEO.get(col_faltante, [])
+            if alternativas:
+                alts_texto = ', '.join(alternativas[:5])
+                sugerencias.append(f"- **{col_faltante}**: busquem `{alts_texto}`...")
+
+        sugerencias_texto = '\n'.join(sugerencias) if sugerencias else ""
+
+        msg = f"""**⚠️ Error en la fulla '{nombre_hoja}'**
+
+---
+
+### ❌ Columnes requerides que no s'han trobat:
+{', '.join([f'`{c}`' for c in columnas_faltantes])}
+
+---
+
+### 📋 Columnes disponibles en el fitxer ({len(columnas_lista)}):
+{columnas_formateadas}
+
+---
+
+### 🔍 Noms de columna que busquem:
+{sugerencias_texto}
+
+---
+
+### 💡 Solució:
+Renombra les columnes del fitxer Excel perquè coincidisquen amb:
+- `Nombre Complet` → nom del proveïdor
+- `N Factura` → número de factura
+- `Desc Gasto` → descripció del gasto
+- `Base imp` → import base imponible
+"""
+        return False, msg
+
+    return True, ""
+
+
 def cargar_desde_archivo_local():
     """Carga datos desde archivo local (si existe)."""
     df_2025 = cargar_datos(ARCHIVO_DATOS, 'SIN EXPTE 2025')
@@ -347,6 +573,19 @@ def cargar_desde_upload(archivo_bytes: bytes):
 
 def procesar_dataframes(df_2024: pd.DataFrame, df_2025: pd.DataFrame):
     """Procesa y limpia los DataFrames."""
+    # Normalizar nombres de columnas
+    df_2024 = normalizar_columnas(df_2024)
+    df_2025 = normalizar_columnas(df_2025)
+
+    # Validar columnas requeridas
+    valido_2024, error_2024 = validar_columnas(df_2024, 'SIN EXPTE 2024')
+    valido_2025, error_2025 = validar_columnas(df_2025, 'SIN EXPTE 2025')
+
+    if not valido_2024:
+        raise ValueError(error_2024)
+    if not valido_2025:
+        raise ValueError(error_2025)
+
     # Limpiar filas de totales
     df_2025 = df_2025[df_2025['Nombre Complet'].notna()].copy()
     df_2024 = df_2024[df_2024['Nombre Complet'].notna()].copy()
@@ -427,6 +666,11 @@ with st.sidebar:
             datos_cargados = False
             error_msg = str(e)
 
+    # Aplicar asignaciones manuales (fuera del caché para reflejar cambios)
+    if datos_cargados:
+        df_2024 = aplicar_asignaciones_manuales(df_2024)
+        df_2025 = aplicar_asignaciones_manuales(df_2025)
+
     st.divider()
 
     if st.button("🔄 Recarregar dades", use_container_width=True):
@@ -453,7 +697,8 @@ with st.sidebar:
             "✈️ Anàlisi de Viatges",
             "📚 Anàlisi de Publicacions",
             "🏢 Top Proveïdors",
-            "📋 Detall de Registres"
+            "📋 Detall de Registres",
+            "⚙️ Gestió de Categories"
         ]
         seccion = st.radio("Selecciona secció:", secciones, label_visibility="collapsed")
     else:
@@ -461,12 +706,9 @@ with st.sidebar:
 
     st.divider()
 
-    # Versión
+    # Versión (historial completo en CHANGELOG.md)
     st.caption(f"📌 Versió {__version__}")
     st.caption(f"📅 {__fecha_version__}")
-
-    with st.expander("📋 Historial de canvis"):
-        st.markdown(__changelog__)
 
 
 # ============================================================
@@ -477,7 +719,12 @@ if not datos_cargados:
     st.subheader("Comparativa 2024 vs 2025")
 
     if error_msg:
-        st.error(f"❌ Error carregant les dades: {error_msg}")
+        st.error("❌ Error carregant les dades")
+        # Si el error tiene formato markdown (de validación de columnas), mostrarlo con st.markdown
+        if '**' in error_msg:
+            st.markdown(error_msg)
+        else:
+            st.code(error_msg)
     else:
         st.info("""
         ### 👋 Benvingut/da!
@@ -673,7 +920,8 @@ elif seccion == "📊 Resum Executiu":
             separators=',.',
             height=400,
             showlegend=True,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(l=20, r=40, t=80, b=40)  # Margen superior para etiquetas
         )
         st.plotly_chart(fig_barras, use_container_width=True)
 
@@ -748,7 +996,8 @@ elif seccion == "📊 Resum Executiu":
     fig_pie.update_layout(
         title="Distribució import 2025 per tipus de proveïdor",
         template='plotly_white',
-        height=350
+        height=400,
+        margin=dict(l=40, r=40, t=60, b=40)  # Márgenes para etiquetas exteriores
     )
     st.plotly_chart(fig_pie, use_container_width=True)
 
@@ -779,55 +1028,122 @@ elif seccion == "📈 Comparativa per Categories":
         (df_cat['Diferencia'] / df_cat['Import_2024']) * 100,
         100
     )
-    df_cat = df_cat.sort_values('Import_2025', ascending=False)
+    df_cat['Diferencia_abs'] = df_cat['Diferencia'].abs()
+    df_cat['Import_Total'] = df_cat['Import_2024'] + df_cat['Import_2025']
 
-    # Gráfico de barras horizontales
+    # Ordenar por diferencia absoluta y tomar top 10
+    df_cat_full = df_cat.copy()  # Guardar todas las categorías para la tabla
+    df_cat_top10 = df_cat.nlargest(10, 'Diferencia_abs').sort_values('Diferencia_abs', ascending=True)
+
+    st.subheader("🔝 Top 10 Categories amb Major Variació")
+    st.caption("Categories ordenades per variació absoluta d'import entre 2024 i 2025")
+
+    # Gráfico de barras horizontales con variación
+    # Colores según si la variación es positiva o negativa
+    colors = ['#e74c3c' if x > 0 else '#27ae60' for x in df_cat_top10['Diferencia']]
+
+    fig_var = go.Figure()
+
+    # Barras de variación (diferencia)
+    fig_var.add_trace(go.Bar(
+        y=df_cat_top10['Categoria'],
+        x=df_cat_top10['Diferencia'],
+        orientation='h',
+        marker_color=colors,
+        text=[f"{formatear_euro(x)}" for x in df_cat_top10['Diferencia']],
+        textposition='outside',
+        textfont=dict(size=11),
+        name='Variació',
+        hovertemplate='<b>%{y}</b><br>' +
+                      'Variació: %{x:,.2f} €<br>' +
+                      '<extra></extra>'
+    ))
+
+    fig_var.update_layout(
+        template='plotly_white',
+        height=450,
+        xaxis_title="Variació Import (€)",
+        xaxis=dict(
+            tickformat=',.0f',
+            zeroline=True,
+            zerolinecolor='#7f8c8d',
+            zerolinewidth=2
+        ),
+        showlegend=False,
+        margin=dict(l=20, r=150, t=60, b=40)  # r=150 para etiquetas exteriores
+    )
+
+    st.plotly_chart(fig_var, use_container_width=True)
+
+    # Leyenda explicativa
+    col_leg1, col_leg2 = st.columns(2)
+    with col_leg1:
+        st.markdown("🔴 **Roig**: Increment de gasto en 2025")
+    with col_leg2:
+        st.markdown("🟢 **Verd**: Reducció de gasto en 2025")
+
+    st.divider()
+
+    # Gráfico comparativo 2024 vs 2025 para el top 10
+    st.subheader("📊 Comparativa Import 2024 vs 2025 (Top 10)")
+
+    df_cat_top10_sorted = df_cat_top10.sort_values('Import_Total', ascending=True)
+
     fig_cat = go.Figure()
     fig_cat.add_trace(go.Bar(
         name='2024',
-        y=df_cat['Categoria'],
-        x=df_cat['Import_2024'],
+        y=df_cat_top10_sorted['Categoria'],
+        x=df_cat_top10_sorted['Import_2024'],
         orientation='h',
-        marker_color='#3498db'
+        marker_color='#3498db',
+        text=[formatear_euro(x) for x in df_cat_top10_sorted['Import_2024']],
+        textposition='inside',
+        textfont=dict(size=10, color='white')
     ))
     fig_cat.add_trace(go.Bar(
         name='2025',
-        y=df_cat['Categoria'],
-        x=df_cat['Import_2025'],
+        y=df_cat_top10_sorted['Categoria'],
+        x=df_cat_top10_sorted['Import_2025'],
         orientation='h',
-        marker_color='#e74c3c'
+        marker_color='#e74c3c',
+        text=[formatear_euro(x) for x in df_cat_top10_sorted['Import_2025']],
+        textposition='inside',
+        textfont=dict(size=10, color='white')
     ))
     fig_cat.update_layout(
         barmode='group',
         template='plotly_white',
-        height=500,
+        height=450,
         xaxis_title="Import (€)",
+        xaxis=dict(tickformat=',.0f'),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        yaxis=dict(autorange="reversed")
+        margin=dict(l=20, r=20, t=60, b=40)
     )
     st.plotly_chart(fig_cat, use_container_width=True)
 
     st.divider()
 
-    # Tabla de detalle
-    st.subheader("📋 Detall per Categoria")
+    # Tabla de detalle completa (todas las categorías)
+    with st.expander("📋 Detall per Categoria (Totes)", expanded=False):
+        df_cat_display = df_cat_full.sort_values('Diferencia_abs', ascending=False).copy()
+        df_cat_display['Import_2024'] = df_cat_display['Import_2024'].apply(formatear_euro)
+        df_cat_display['Import_2025'] = df_cat_display['Import_2025'].apply(formatear_euro)
+        df_cat_display['Diferencia'] = df_cat_display['Diferencia'].apply(formatear_euro)
+        df_cat_display['Variacio_pct'] = df_cat_display['Variacio_pct'].apply(lambda x: f"{x:+.1f}%")
 
-    df_cat_display = df_cat.copy()
-    df_cat_display['Import_2024'] = df_cat_display['Import_2024'].apply(formatear_euro)
-    df_cat_display['Import_2025'] = df_cat_display['Import_2025'].apply(formatear_euro)
-    df_cat_display['Diferencia'] = df_cat_display['Diferencia'].apply(formatear_euro)
-    df_cat_display['Variacio_pct'] = df_cat_display['Variacio_pct'].apply(lambda x: f"{x:+.1f}%")
+        df_cat_display = df_cat_display.rename(columns={
+            'Import_2024': 'Import 2024',
+            'Import_2025': 'Import 2025',
+            'Registres_2024': 'Reg. 2024',
+            'Registres_2025': 'Reg. 2025',
+            'Diferencia': 'Diferència',
+            'Variacio_pct': 'Variació %'
+        })
 
-    df_cat_display = df_cat_display.rename(columns={
-        'Import_2024': 'Import 2024',
-        'Import_2025': 'Import 2025',
-        'Registres_2024': 'Reg. 2024',
-        'Registres_2025': 'Reg. 2025',
-        'Diferencia': 'Diferència',
-        'Variacio_pct': 'Variació %'
-    })
+        # Eliminar columnas auxiliares
+        df_cat_display = df_cat_display.drop(columns=['Diferencia_abs', 'Import_Total'])
 
-    st.dataframe(df_cat_display, use_container_width=True, hide_index=True)
+        st.dataframe(df_cat_display, use_container_width=True, hide_index=True)
 
 
 # ============================================================
@@ -931,21 +1247,21 @@ elif seccion == "✈️ Anàlisi de Viatges":
         nuevos_agrupados.columns = ['Proveïdor', 'Import Total', 'Registres']
         nuevos_agrupados = nuevos_agrupados.sort_values('Import Total', ascending=False)
 
-        # Formatear
-        nuevos_display = nuevos_agrupados.copy()
-        nuevos_display['Import Total'] = nuevos_display['Import Total'].apply(formatear_euro)
-
-        st.dataframe(nuevos_display.head(15), use_container_width=True, hide_index=True)
-
         st.warning(f"""
         ⚠️ **Alerta**: Hi ha **{len(nuevos_agrupados)} nous proveïdors de viatges** en 2025
         que no existien en 2024, amb un import total de **{formatear_euro(nuevos_viajes['Base imp'].sum())}**
         """)
+
+        with st.expander(f"📋 Llistat de {len(nuevos_agrupados)} nous proveïdors", expanded=False):
+            # Formatear
+            nuevos_display = nuevos_agrupados.copy()
+            nuevos_display['Import Total'] = nuevos_display['Import Total'].apply(formatear_euro)
+            st.dataframe(nuevos_display, use_container_width=True, hide_index=True)
     else:
         st.success("No hi ha nous proveïdors de viatges en 2025")
 
     # Detalle de facturas de viajes
-    with st.expander("📋 Detall de totes les factures de viatges 2025"):
+    with st.expander("📋 Detall de totes les factures de viatges 2025", expanded=False):
         cols_mostrar = ['Nombre Complet', 'N Factura', 'Desc Gasto', 'Base imp']
         cols_disponibles = [c for c in cols_mostrar if c in df_viajes_2025.columns]
         st.dataframe(
@@ -1084,14 +1400,15 @@ elif seccion == "📚 Anàlisi de Publicacions":
         st.plotly_chart(fig_ed, use_container_width=True)
 
         # Tabla
-        df_ed_display = df_ed.copy()
-        df_ed_display['Import 2024'] = df_ed_display['Import 2024'].apply(formatear_euro)
-        df_ed_display['Import 2025'] = df_ed_display['Import 2025'].apply(formatear_euro)
-        df_ed_display['Diferència'] = df_ed_display['Diferència'].apply(formatear_euro)
-        st.dataframe(df_ed_display, use_container_width=True, hide_index=True)
+        with st.expander("📋 Comparativa per editorial", expanded=False):
+            df_ed_display = df_ed.copy()
+            df_ed_display['Import 2024'] = df_ed_display['Import 2024'].apply(formatear_euro)
+            df_ed_display['Import 2025'] = df_ed_display['Import 2025'].apply(formatear_euro)
+            df_ed_display['Diferència'] = df_ed_display['Diferència'].apply(formatear_euro)
+            st.dataframe(df_ed_display, use_container_width=True, hide_index=True)
 
     # Detalle de publicaciones
-    with st.expander("📋 Detall de factures de publicacions 2025"):
+    with st.expander("📋 Detall de factures de publicacions 2025", expanded=False):
         cols_mostrar = ['Nombre Complet', 'N Factura', 'Desc Gasto', 'Base imp']
         cols_disponibles = [c for c in cols_mostrar if c in df_pub_2025.columns]
         st.dataframe(
@@ -1175,7 +1492,7 @@ elif seccion == "🏢 Top Proveïdors":
     st.plotly_chart(fig_inc, use_container_width=True)
 
     # Tabla
-    with st.expander("📋 Taula completa d'increments"):
+    with st.expander("📋 Taula completa d'increments", expanded=False):
         df_comp_display = df_comp.copy()
         df_comp_display['Import 2024'] = df_comp_display['Import 2024'].apply(formatear_euro)
         df_comp_display['Import 2025'] = df_comp_display['Import 2025'].apply(formatear_euro)
@@ -1196,15 +1513,15 @@ elif seccion == "🏢 Top Proveïdors":
     top_nuevos.columns = ['Proveïdor', 'Import Total', 'Registres']
     top_nuevos = top_nuevos.sort_values('Import Total', ascending=False).head(15)
 
-    top_nuevos_display = top_nuevos.copy()
-    top_nuevos_display['Import Total'] = top_nuevos_display['Import Total'].apply(formatear_euro)
-
-    st.dataframe(top_nuevos_display, use_container_width=True, hide_index=True)
-
     st.info(f"""
     📊 **Resum nous proveïdors**: {len(nuevos)} nous proveïdors en 2025 amb un import total
     de **{formatear_euro(df_nuevos['Base imp'].sum())}** ({(df_nuevos['Base imp'].sum()/total_2025)*100:.1f}% del total)
     """)
+
+    with st.expander("📋 Top 15 nous proveïdors", expanded=False):
+        top_nuevos_display = top_nuevos.copy()
+        top_nuevos_display['Import Total'] = top_nuevos_display['Import Total'].apply(formatear_euro)
+        st.dataframe(top_nuevos_display, use_container_width=True, hide_index=True)
 
 
 # ============================================================
@@ -1276,6 +1593,426 @@ elif seccion == "📋 Detall de Registres":
 
         df_filtrado.to_excel(archivo_salida, index=False)
         st.success(f"✅ Arxiu exportat: `{archivo_salida.name}`")
+
+
+# ============================================================
+# SECCIÓN: GESTIÓN DE CATEGORÍAS
+# ============================================================
+elif seccion == "⚙️ Gestió de Categories":
+    st.header("⚙️ Gestió de Categories")
+
+    st.markdown("""
+    Aquesta secció permet personalitzar la classificació de gastos:
+    - **Reassignar categories** a registres individuals o proveïdors
+    - **Crear noves categories** personalitzades
+    - **Veure i gestionar** les regles actives
+    """)
+
+    # Combinar datos para el formulario
+    df_combinado = pd.concat([df_2024, df_2025], ignore_index=True)
+
+    # Tabs para organizar la sección
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Reassignar Registres",
+        "🏢 Regles per Proveïdor",
+        "➕ Nova Categoria",
+        "📊 Regles Actives"
+    ])
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 1: Reasignar registros individuales
+    # ─────────────────────────────────────────────────────────────
+    with tab1:
+        st.subheader("📋 Reassignar Categoria a Registres")
+
+        st.info("Selecciona un any i filtra per trobar el registre que vols reassignar.")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            any_asignar = st.radio("Any:", [2024, 2025], horizontal=True, key="any_asignar")
+            df_trabajo = df_2024 if any_asignar == 2024 else df_2025
+
+        with col2:
+            # Filtro por categoría actual
+            cat_actual_filter = st.selectbox(
+                "Filtrar per categoria actual:",
+                ['Totes'] + sorted(df_trabajo['Categoria'].unique().tolist()),
+                key="cat_filter_asignar"
+            )
+
+        # Aplicar filtro
+        df_mostrar = df_trabajo.copy()
+        if cat_actual_filter != 'Totes':
+            df_mostrar = df_mostrar[df_mostrar['Categoria'] == cat_actual_filter]
+
+        # Buscar por texto
+        busqueda = st.text_input("🔍 Buscar per proveïdor o descripció:", key="busqueda_registre")
+        if busqueda:
+            mask = (
+                df_mostrar['Nombre Complet'].str.lower().str.contains(busqueda.lower(), na=False) |
+                df_mostrar['Desc Gasto'].str.lower().str.contains(busqueda.lower(), na=False)
+            )
+            df_mostrar = df_mostrar[mask]
+
+        st.caption(f"Mostrant {len(df_mostrar)} registres")
+
+        # Mostrar registros con checkbox para selección
+        if len(df_mostrar) > 0:
+            # Crear identificador único
+            df_mostrar = df_mostrar.copy()
+            df_mostrar['_id'] = df_mostrar['Nombre Complet'] + ' | ' + df_mostrar['N Factura'].astype(str)
+
+            # Selector de registro
+            registro_seleccionado = st.selectbox(
+                "Selecciona el registre a reassignar:",
+                df_mostrar['_id'].tolist(),
+                key="registro_seleccionado"
+            )
+
+            if registro_seleccionado:
+                # Mostrar detalle del registro
+                registro = df_mostrar[df_mostrar['_id'] == registro_seleccionado].iloc[0]
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Proveïdor:**")
+                    st.write(registro['Nombre Complet'])
+                    st.markdown("**Factura:**")
+                    st.write(registro['N Factura'])
+                with col2:
+                    st.markdown("**Descripció:**")
+                    st.write(registro['Desc Gasto'])
+                    st.markdown("**Import:**")
+                    st.write(formatear_euro(registro['Base imp']))
+
+                st.markdown(f"**Categoria actual:** `{registro['Categoria']}`")
+
+                # Selector de nueva categoría
+                todas_cats = obtener_todas_categorias()
+                nueva_cat = st.selectbox(
+                    "Nova categoria:",
+                    todas_cats,
+                    key="nueva_cat_registro"
+                )
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("✅ Aplicar canvi", type="primary", key="btn_aplicar_registro"):
+                        clave = (registro['Nombre Complet'], registro['N Factura'])
+                        st.session_state.asignaciones_manuales[clave] = nueva_cat
+                        st.success(f"✅ Registre reassignat a '{nueva_cat}'")
+                        st.rerun()
+
+                with col2:
+                    # Verificar si tiene asignación manual
+                    clave = (registro['Nombre Complet'], registro['N Factura'])
+                    if clave in st.session_state.asignaciones_manuales:
+                        if st.button("🗑️ Eliminar assignació manual", key="btn_eliminar_registro"):
+                            del st.session_state.asignaciones_manuales[clave]
+                            st.success("Assignació manual eliminada")
+                            st.rerun()
+        else:
+            st.warning("No s'han trobat registres amb els filtres seleccionats.")
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 2: Reglas por proveedor
+    # ─────────────────────────────────────────────────────────────
+    with tab2:
+        st.subheader("🏢 Assignar Categoria a Tots els Registres d'un Proveïdor")
+
+        st.info("""
+        Crea una regla per assignar automàticament una categoria a **tots els registres**
+        d'un proveïdor (passat i futur).
+        """)
+
+        # Lista de proveedores únicos
+        proveedores_unicos = sorted(df_combinado['Nombre Complet'].unique().tolist())
+
+        proveedor_seleccionado = st.selectbox(
+            "Selecciona proveïdor:",
+            proveedores_unicos,
+            key="proveedor_regla"
+        )
+
+        if proveedor_seleccionado:
+            # Mostrar info del proveedor
+            registros_prov = df_combinado[df_combinado['Nombre Complet'] == proveedor_seleccionado]
+            cats_actuales = registros_prov['Categoria'].unique()
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Registres totals", len(registros_prov))
+            with col2:
+                st.metric("Import total", formatear_euro(registros_prov['Base imp'].sum()))
+            with col3:
+                st.metric("Categories actuals", len(cats_actuales))
+
+            st.markdown(f"**Categories actuals:** {', '.join(cats_actuales)}")
+
+            # Verificar si ya tiene regla
+            if proveedor_seleccionado in st.session_state.reglas_proveedor:
+                st.warning(f"⚠️ Aquest proveïdor ja té una regla activa: `{st.session_state.reglas_proveedor[proveedor_seleccionado]}`")
+
+            # Selector de categoría
+            todas_cats = obtener_todas_categorias()
+            nueva_cat_prov = st.selectbox(
+                "Assignar categoria:",
+                todas_cats,
+                key="nueva_cat_proveedor"
+            )
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✅ Crear regla", type="primary", key="btn_crear_regla"):
+                    st.session_state.reglas_proveedor[proveedor_seleccionado] = nueva_cat_prov
+                    st.success(f"✅ Regla creada: '{proveedor_seleccionado}' → '{nueva_cat_prov}'")
+                    st.rerun()
+
+            with col2:
+                if proveedor_seleccionado in st.session_state.reglas_proveedor:
+                    if st.button("🗑️ Eliminar regla", key="btn_eliminar_regla"):
+                        del st.session_state.reglas_proveedor[proveedor_seleccionado]
+                        st.success("Regla eliminada")
+                        st.rerun()
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 3: Crear nueva categoría
+    # ─────────────────────────────────────────────────────────────
+    with tab3:
+        st.subheader("➕ Crear Nova Categoria")
+
+        st.info("Crea una nova categoria personalitzada per classificar gastos.")
+
+        # Mostrar categorías existentes
+        with st.expander("📋 Categories existents"):
+            todas_cats = obtener_todas_categorias()
+            col1, col2 = st.columns(2)
+            for i, cat in enumerate(todas_cats):
+                with col1 if i % 2 == 0 else col2:
+                    if cat in st.session_state.categorias_personalizadas:
+                        st.markdown(f"🆕 {cat}")
+                    else:
+                        st.markdown(f"📁 {cat}")
+
+        # Formulario para nueva categoría
+        nueva_categoria = st.text_input(
+            "Nom de la nova categoria:",
+            placeholder="Ex: Servicis d'assessorament extern",
+            key="input_nueva_cat"
+        )
+
+        if nueva_categoria:
+            if nueva_categoria in obtener_todas_categorias():
+                st.error("❌ Aquesta categoria ja existeix")
+            else:
+                if st.button("✅ Crear categoria", type="primary", key="btn_crear_cat"):
+                    st.session_state.categorias_personalizadas.append(nueva_categoria)
+                    st.success(f"✅ Categoria '{nueva_categoria}' creada correctament")
+                    st.balloons()
+                    st.rerun()
+
+        # Eliminar categorías personalizadas
+        if st.session_state.categorias_personalizadas:
+            st.divider()
+            st.markdown("**🗑️ Eliminar categories personalitzades:**")
+
+            cat_eliminar = st.selectbox(
+                "Selecciona categoria a eliminar:",
+                st.session_state.categorias_personalizadas,
+                key="cat_eliminar"
+            )
+
+            if st.button("🗑️ Eliminar", key="btn_eliminar_cat"):
+                # Verificar que no esté en uso
+                en_uso = False
+                for cat in st.session_state.reglas_proveedor.values():
+                    if cat == cat_eliminar:
+                        en_uso = True
+                        break
+                for cat in st.session_state.asignaciones_manuales.values():
+                    if cat == cat_eliminar:
+                        en_uso = True
+                        break
+
+                if en_uso:
+                    st.error("❌ No es pot eliminar: la categoria està en ús")
+                else:
+                    st.session_state.categorias_personalizadas.remove(cat_eliminar)
+                    st.success(f"✅ Categoria '{cat_eliminar}' eliminada")
+                    st.rerun()
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 4: Ver reglas activas
+    # ─────────────────────────────────────────────────────────────
+    with tab4:
+        st.subheader("📊 Regles Actives")
+
+        # Contador de reglas
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("🏢 Regles per proveïdor", len(st.session_state.reglas_proveedor))
+        with col2:
+            st.metric("📋 Assignacions individuals", len(st.session_state.asignaciones_manuales))
+        with col3:
+            st.metric("🆕 Categories personalitzades", len(st.session_state.categorias_personalizadas))
+
+        st.divider()
+
+        # Reglas por proveedor
+        if st.session_state.reglas_proveedor:
+            st.markdown("### 🏢 Regles per Proveïdor")
+            reglas_df = pd.DataFrame([
+                {'Proveïdor': k, 'Categoria Assignada': v}
+                for k, v in st.session_state.reglas_proveedor.items()
+            ])
+            st.dataframe(reglas_df, use_container_width=True, hide_index=True)
+
+            if st.button("🗑️ Eliminar totes les regles per proveïdor", key="btn_limpiar_reglas"):
+                st.session_state.reglas_proveedor = {}
+                st.success("Totes les regles eliminades")
+                st.rerun()
+        else:
+            st.info("No hi ha regles per proveïdor actives")
+
+        st.divider()
+
+        # Asignaciones individuales
+        if st.session_state.asignaciones_manuales:
+            st.markdown("### 📋 Assignacions Individuals")
+            asig_df = pd.DataFrame([
+                {'Proveïdor': k[0], 'Factura': k[1], 'Categoria Assignada': v}
+                for k, v in st.session_state.asignaciones_manuales.items()
+            ])
+            st.dataframe(asig_df, use_container_width=True, hide_index=True)
+
+            if st.button("🗑️ Eliminar totes les assignacions individuals", key="btn_limpiar_asig"):
+                st.session_state.asignaciones_manuales = {}
+                st.success("Totes les assignacions eliminades")
+                st.rerun()
+        else:
+            st.info("No hi ha assignacions individuals actives")
+
+        st.divider()
+
+        # Categorías personalizadas
+        if st.session_state.categorias_personalizadas:
+            st.markdown("### 🆕 Categories Personalitzades")
+            for cat in st.session_state.categorias_personalizadas:
+                st.markdown(f"- {cat}")
+        else:
+            st.info("No hi ha categories personalitzades")
+
+        st.divider()
+
+        # ─────────────────────────────────────────────────────────────
+        # EXPORTAR / IMPORTAR REGLAS
+        # ─────────────────────────────────────────────────────────────
+        st.markdown("### 💾 Exportar / Importar Regles")
+
+        col_exp, col_imp = st.columns(2)
+
+        with col_exp:
+            st.markdown("**📤 Exportar regles a JSON**")
+
+            # Preparar datos para exportar
+            # Convertir tuplas a listas para JSON
+            asignaciones_export = {
+                f"{k[0]}|||{k[1]}": v
+                for k, v in st.session_state.asignaciones_manuales.items()
+            }
+
+            export_data = {
+                "version": __version__,
+                "fecha_exportacion": datetime.now().isoformat(),
+                "categorias_personalizadas": st.session_state.categorias_personalizadas,
+                "reglas_proveedor": st.session_state.reglas_proveedor,
+                "asignaciones_manuales": asignaciones_export
+            }
+
+            json_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+
+            st.download_button(
+                label="📥 Descarregar JSON",
+                data=json_str,
+                file_name=f"regles_categories_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                key="btn_exportar_json"
+            )
+
+            st.caption(f"📊 {len(st.session_state.reglas_proveedor)} regles, "
+                      f"{len(st.session_state.asignaciones_manuales)} assignacions, "
+                      f"{len(st.session_state.categorias_personalizadas)} categories")
+
+        with col_imp:
+            st.markdown("**📥 Importar regles des de JSON**")
+
+            archivo_json = st.file_uploader(
+                "Selecciona fitxer JSON",
+                type=['json'],
+                key="upload_json_regles"
+            )
+
+            if archivo_json is not None:
+                try:
+                    import_data = json.load(archivo_json)
+
+                    st.info(f"📋 Fitxer versió: {import_data.get('version', 'desconeguda')}")
+
+                    # Mostrar resumen
+                    n_cats = len(import_data.get('categorias_personalizadas', []))
+                    n_reglas = len(import_data.get('reglas_proveedor', {}))
+                    n_asig = len(import_data.get('asignaciones_manuales', {}))
+
+                    st.caption(f"Conté: {n_reglas} regles, {n_asig} assignacions, {n_cats} categories")
+
+                    modo_import = st.radio(
+                        "Mode d'importació:",
+                        ["Afegir a existents", "Reemplaçar tot"],
+                        key="modo_importacion",
+                        horizontal=True
+                    )
+
+                    if st.button("✅ Importar", type="primary", key="btn_importar_json"):
+                        if modo_import == "Reemplaçar tot":
+                            st.session_state.categorias_personalizadas = []
+                            st.session_state.reglas_proveedor = {}
+                            st.session_state.asignaciones_manuales = {}
+
+                        # Importar categorías personalizadas
+                        for cat in import_data.get('categorias_personalizadas', []):
+                            if cat not in st.session_state.categorias_personalizadas:
+                                st.session_state.categorias_personalizadas.append(cat)
+
+                        # Importar reglas por proveedor
+                        for prov, cat in import_data.get('reglas_proveedor', {}).items():
+                            st.session_state.reglas_proveedor[prov] = cat
+
+                        # Importar asignaciones manuales
+                        for key_str, cat in import_data.get('asignaciones_manuales', {}).items():
+                            parts = key_str.split('|||')
+                            if len(parts) == 2:
+                                clave = (parts[0], parts[1])
+                                st.session_state.asignaciones_manuales[clave] = cat
+
+                        st.success("✅ Regles importades correctament!")
+                        st.rerun()
+
+                except json.JSONDecodeError:
+                    st.error("❌ Error: El fitxer no és un JSON vàlid")
+                except Exception as e:
+                    st.error(f"❌ Error important: {str(e)}")
+
+        st.divider()
+
+        # Botón para limpiar todo
+        st.warning("⚠️ **Zona de perill**")
+        if st.button("🗑️ ELIMINAR TOTES LES PERSONALITZACIONS", type="secondary", key="btn_reset_todo"):
+            st.session_state.reglas_proveedor = {}
+            st.session_state.asignaciones_manuales = {}
+            st.session_state.categorias_personalizadas = []
+            st.success("✅ Totes les personalitzacions han sigut eliminades")
+            st.rerun()
 
 
 # ============================================================
